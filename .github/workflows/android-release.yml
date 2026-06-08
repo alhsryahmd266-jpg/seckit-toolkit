@@ -9,6 +9,7 @@ jobs:
   build:
     name: Build Signed APK
     runs-on: ubuntu-latest
+    timeout-minutes: 60
 
     steps:
       - name: Checkout code
@@ -19,14 +20,6 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v3
-        with:
-          version: 10
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
       - name: Setup JDK 17
         uses: actions/setup-java@v4
         with:
@@ -35,71 +28,97 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: "11076708"
+
+      - name: Use standalone package.json
+        run: |
+          cp package.standalone.json package.json
+          echo "Using standalone package.json"
+          cat package.json
+
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps
 
       - name: Install Expo CLI
-        run: pnpm add -g expo-cli @expo/cli
+        run: npm install -g @expo/cli expo-modules-autolinking
 
-      - name: Run Expo Prebuild (Android)
-        run: npx expo prebuild --platform android --clean
+      - name: Run Expo Prebuild for Android
+        run: npx expo prebuild --platform android --clean --non-interactive
         env:
           EXPO_NO_TELEMETRY: 1
+          CI: true
+
+      - name: Make Gradlew executable
+        run: chmod +x android/gradlew
 
       - name: Generate Release Keystore
         run: |
           keytool -genkeypair -v \
-            -keystore seckit-release.jks \
+            -keystore ${{ github.workspace }}/seckit-release.jks \
             -alias seckit \
             -keyalg RSA \
             -keysize 2048 \
             -validity 10000 \
-            -dname "CN=SecKit,OU=Security,O=SecKit,L=Cairo,ST=Egypt,C=EG" \
-            -storepass seckit2024 \
-            -keypass seckit2024
-          echo "Keystore generated"
+            -dname "CN=SecKit App,OU=Security,O=SecKit,L=Cairo,ST=Egypt,C=EG" \
+            -storepass "seckit@2024!" \
+            -keypass "seckit@2024!" \
+            -noprompt
+          echo "✅ Keystore generated"
+          keytool -list -v -keystore ${{ github.workspace }}/seckit-release.jks -alias seckit -storepass "seckit@2024!" | head -15
 
       - name: Build Release APK
+        working-directory: android
         run: |
-          cd android
-          chmod +x gradlew
           ./gradlew assembleRelease \
             -Pandroid.injected.signing.store.file=${{ github.workspace }}/seckit-release.jks \
-            -Pandroid.injected.signing.store.password=seckit2024 \
+            -Pandroid.injected.signing.store.password=seckit@2024! \
             -Pandroid.injected.signing.key.alias=seckit \
-            -Pandroid.injected.signing.key.password=seckit2024
+            -Pandroid.injected.signing.key.password=seckit@2024! \
+            --stacktrace
         env:
-          GRADLE_OPTS: "-Dorg.gradle.daemon=false -Dorg.gradle.parallel=false"
+          GRADLE_OPTS: "-Dorg.gradle.daemon=false -Dorg.gradle.jvmargs=-Xmx4g"
 
-      - name: Verify APK Signature
+      - name: Find and verify APK
+        id: apk
         run: |
           APK=$(find android/app/build/outputs/apk/release -name "*.apk" | head -1)
-          echo "APK: $APK"
-          jarsigner -verify -verbose -certs "$APK" | head -20
-          echo "APK SIZE: $(du -sh $APK)"
-
-      - name: Rename APK
-        run: |
-          APK=$(find android/app/build/outputs/apk/release -name "*.apk" | head -1)
-          cp "$APK" seckit-v${{ github.run_number }}-signed.apk
-          echo "APK_PATH=seckit-v${{ github.run_number }}-signed.apk" >> $GITHUB_ENV
+          echo "APK found: $APK"
+          echo "Size: $(du -sh $APK)"
+          jarsigner -verify -verbose -certs "$APK" | head -10
+          cp "$APK" "SecKit-v1.0-signed.apk"
+          echo "apk_path=SecKit-v1.0-signed.apk" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.${{ github.run_number }}
-          name: "SecKit v1.0.${{ github.run_number }} — Signed APK"
+          tag_name: "v1.0.${{ github.run_number }}"
+          name: "SecKit v1.0.${{ github.run_number }} — Signed Android APK"
           body: |
-            ## SecKit — Security Toolkit
+            ## 🛡️ SecKit — Professional Security Toolkit
             
-            APK موقع رقمياً ومتحقق منه.
+            **APK موقع رقمياً بـ RSA 2048 — جاهز للتثبيت على أي Android**
             
             ### الأدوات المتضمنة:
-            - Port Scanner & Network Discovery
-            - DNS Lookup & WHOIS
-            - APK Analyzer
-            - Frida Scripts Manager
-            - HTTP Request Builder
-            - SSL Inspector
-          files: ${{ env.APK_PATH }}
+            | الأداة | الوصف |
+            |--------|--------|
+            | 📡 Port Scanner | فحص المنافذ TCP/UDP |
+            | 🌐 Network Scanner | اكتشاف الأجهزة على الشبكة |
+            | 🔍 DNS Lookup | استعلام سجلات DNS |
+            | 📋 WHOIS | معلومات تسجيل النطاقات |
+            | 🤖 APK Analyzer | تحليل ملفات APK والصلاحيات |
+            | 💉 Frida Scripts | حقن وإدارة scripts |
+            | 🔧 Hex Viewer | فحص الملفات الثنائية |
+            | 🌍 HTTP Tester | بناء وإرسال طلبات HTTP |
+            | 🔒 SSL Inspector | فحص شهادات TLS |
+            
+            ### التثبيت:
+            1. حمّل `SecKit-v1.0-signed.apk`
+            2. فعّل "تثبيت من مصادر غير معروفة"
+            3. ثبّت وافتح
+            4. أضف رابط السيرفر والتوكن من الإعدادات
+            
+          files: SecKit-v1.0-signed.apk
           draft: false
           prerelease: false
         env:
