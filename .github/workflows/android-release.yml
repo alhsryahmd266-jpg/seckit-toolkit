@@ -49,11 +49,7 @@ jobs:
 
       - name: Run Expo Prebuild
         run: |
-          ./node_modules/.bin/expo prebuild \
-            --platform android \
-            --clean \
-            --non-interactive \
-            --skip-dependency-update 2>&1
+          ./node_modules/.bin/expo prebuild --platform android --clean 2>&1
         env:
           EXPO_NO_TELEMETRY: "1"
           CI: "1"
