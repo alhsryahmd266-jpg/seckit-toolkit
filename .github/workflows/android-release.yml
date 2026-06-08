@@ -1,4 +1,4 @@
-name: Build & Release Android APK
+name: Build & Release SecKit APK
 
 on:
   push:
@@ -8,8 +8,8 @@ on:
 jobs:
   build:
     name: Build Signed APK
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
 
     steps:
       - name: Checkout code
@@ -28,26 +28,38 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
-        with:
-          cmdline-tools-version: "11076708"
+
+      - name: Accept Android licenses
+        run: yes | sdkmanager --licenses 2>/dev/null || true
 
       - name: Use standalone package.json
         run: |
           cp package.standalone.json package.json
-          echo "Using standalone package.json"
           cat package.json
 
       - name: Install dependencies
-        run: npm install --legacy-peer-deps
-
-      - name: Install Expo CLI
-        run: npm install -g @expo/cli expo-modules-autolinking
-
-      - name: Run Expo Prebuild for Android
-        run: npx expo prebuild --platform android --clean --non-interactive
+        run: |
+          npm install --legacy-peer-deps --no-audit --prefer-offline || \
+          npm install --legacy-peer-deps --no-audit
         env:
-          EXPO_NO_TELEMETRY: 1
-          CI: true
+          npm_config_registry: https://registry.npmjs.org/
+
+      - name: Verify expo installed
+        run: ./node_modules/.bin/expo --version
+
+      - name: Run Expo Prebuild
+        run: |
+          ./node_modules/.bin/expo prebuild \
+            --platform android \
+            --clean \
+            --non-interactive \
+            --skip-dependency-update 2>&1
+        env:
+          EXPO_NO_TELEMETRY: "1"
+          CI: "1"
+
+      - name: Show generated AndroidManifest
+        run: cat android/app/src/main/AndroidManifest.xml
 
       - name: Make Gradlew executable
         run: chmod +x android/gradlew
@@ -55,70 +67,100 @@ jobs:
       - name: Generate Release Keystore
         run: |
           keytool -genkeypair -v \
-            -keystore ${{ github.workspace }}/seckit-release.jks \
-            -alias seckit \
-            -keyalg RSA \
-            -keysize 2048 \
-            -validity 10000 \
-            -dname "CN=SecKit App,OU=Security,O=SecKit,L=Cairo,ST=Egypt,C=EG" \
-            -storepass "seckit@2024!" \
-            -keypass "seckit@2024!" \
-            -noprompt
-          echo "✅ Keystore generated"
-          keytool -list -v -keystore ${{ github.workspace }}/seckit-release.jks -alias seckit -storepass "seckit@2024!" | head -15
+            -keystore $GITHUB_WORKSPACE/seckit.jks \
+            -alias seckit -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=SecKit Security Toolkit,OU=Security,O=SecKit,L=Cairo,ST=Egypt,C=EG" \
+            -storepass "SecKit2024" -keypass "SecKit2024" -noprompt
+          echo ""
+          echo "=== Keystore Info ==="
+          keytool -list -v \
+            -keystore $GITHUB_WORKSPACE/seckit.jks \
+            -storepass "SecKit2024" | grep -E "Owner|Issuer|Serial|Valid|SHA256|Fingerprint"
 
       - name: Build Release APK
         working-directory: android
         run: |
           ./gradlew assembleRelease \
-            -Pandroid.injected.signing.store.file=${{ github.workspace }}/seckit-release.jks \
-            -Pandroid.injected.signing.store.password=seckit@2024! \
+            -Pandroid.injected.signing.store.file=$GITHUB_WORKSPACE/seckit.jks \
+            -Pandroid.injected.signing.store.password=SecKit2024 \
             -Pandroid.injected.signing.key.alias=seckit \
-            -Pandroid.injected.signing.key.password=seckit@2024! \
-            --stacktrace
+            -Pandroid.injected.signing.key.password=SecKit2024 \
+            --no-daemon \
+            --stacktrace 2>&1
         env:
-          GRADLE_OPTS: "-Dorg.gradle.daemon=false -Dorg.gradle.jvmargs=-Xmx4g"
+          GRADLE_OPTS: "-Dorg.gradle.daemon=false -Dorg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=512m"
+          JAVA_OPTS: "-Xmx4g"
 
-      - name: Find and verify APK
+      - name: Find APK and verify
         id: apk
         run: |
           APK=$(find android/app/build/outputs/apk/release -name "*.apk" | head -1)
-          echo "APK found: $APK"
-          echo "Size: $(du -sh $APK)"
-          jarsigner -verify -verbose -certs "$APK" | head -10
-          cp "$APK" "SecKit-v1.0-signed.apk"
-          echo "apk_path=SecKit-v1.0-signed.apk" >> $GITHUB_OUTPUT
+          if [ -z "$APK" ]; then
+            echo "❌ APK not found!"
+            find android/app/build -name "*.apk" 2>/dev/null || echo "No APKs anywhere"
+            exit 1
+          fi
+          echo "✅ APK: $APK"
+          SIZE=$(du -sh "$APK" | cut -f1)
+          echo "Size: $SIZE"
+          echo ""
+          echo "=== Signature Verification ==="
+          jarsigner -verify -verbose -certs "$APK" 2>&1 | head -20
+          cp "$APK" SecKit-v1.0.${{ github.run_number }}-signed.apk
+          echo "apk_path=SecKit-v1.0.${{ github.run_number }}-signed.apk" >> $GITHUB_OUTPUT
+          echo "size=$SIZE" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "v1.0.${{ github.run_number }}"
-          name: "SecKit v1.0.${{ github.run_number }} — Signed Android APK"
+          name: "🛡️ SecKit v1.0.${{ github.run_number }} — APK موقع رقمياً"
           body: |
-            ## 🛡️ SecKit — Professional Security Toolkit
-            
-            **APK موقع رقمياً بـ RSA 2048 — جاهز للتثبيت على أي Android**
-            
-            ### الأدوات المتضمنة:
+            ## 🛡️ SecKit — أقوى تطبيق أمني على Android
+
+            ✅ **موقع رقمياً بـ RSA 2048-bit** — توقيع أصلي معتمد
+            📦 **الحجم:** ${{ steps.apk.outputs.size }}
+            🔨 **Build:** #${{ github.run_number }}
+
+            ---
+
+            ### 🔧 الأدوات المتضمنة:
             | الأداة | الوصف |
             |--------|--------|
-            | 📡 Port Scanner | فحص المنافذ TCP/UDP |
-            | 🌐 Network Scanner | اكتشاف الأجهزة على الشبكة |
-            | 🔍 DNS Lookup | استعلام سجلات DNS |
+            | 📡 Port Scanner | فحص المنافذ TCP/UDP على أي هدف |
+            | 🌐 Network Scanner | اكتشاف كل الأجهزة على الشبكة |
+            | 🔍 DNS Lookup | استعلام كامل لسجلات DNS |
             | 📋 WHOIS | معلومات تسجيل النطاقات |
-            | 🤖 APK Analyzer | تحليل ملفات APK والصلاحيات |
-            | 💉 Frida Scripts | حقن وإدارة scripts |
-            | 🔧 Hex Viewer | فحص الملفات الثنائية |
-            | 🌍 HTTP Tester | بناء وإرسال طلبات HTTP |
-            | 🔒 SSL Inspector | فحص شهادات TLS |
-            
-            ### التثبيت:
-            1. حمّل `SecKit-v1.0-signed.apk`
-            2. فعّل "تثبيت من مصادر غير معروفة"
-            3. ثبّت وافتح
-            4. أضف رابط السيرفر والتوكن من الإعدادات
-            
-          files: SecKit-v1.0-signed.apk
+            | 🤖 APK Analyzer | تحليل ملفات APK، الـ manifest، والصلاحيات |
+            | 💉 Frida Scripts | حقن وإدارة scripts على التطبيقات الشغّالة |
+            | 🔧 Hex Viewer | فحص الملفات الثنائية byte by byte |
+            | 🌍 HTTP Tester | بناء وإرسال أي طلب HTTP/HTTPS |
+            | 🔒 SSL Inspector | فحص شهادات TLS وسلسلة الثقة |
+            | 🚦 Traffic Interceptor | التقاط وإعادة إرسال الحزم |
+
+            ---
+
+            ### 📋 الصلاحيات (بدون root):
+            - ✅ الشبكة الكاملة (WiFi, Bluetooth, NFC)
+            - ✅ الموقع الجغرافي (Fine + Background)
+            - ✅ الملفات والتخزين الكامل
+            - ✅ الكاميرا والميكروفون
+            - ✅ قراءة وإرسال SMS
+            - ✅ فحص التطبيقات المثبتة (QUERY_ALL_PACKAGES)
+            - ✅ إحصائيات استخدام التطبيقات (PACKAGE_USAGE_STATS)
+            - ✅ النوافذ العائمة (SYSTEM_ALERT_WINDOW)
+            - ✅ التثبيت والحذف
+
+            ---
+
+            ### 📲 طريقة التثبيت:
+            1. حمّل `SecKit-v1.0.${{ github.run_number }}-signed.apk`
+            2. فعّل **"تثبيت من مصادر غير معروفة"** في الإعدادات
+            3. ثبّت التطبيق وافتحه
+            4. في **Settings** أضف رابط السيرفر والتوكن
+            5. جميع الأدوات جاهزة للاستخدام 🚀
+
+          files: ${{ steps.apk.outputs.apk_path }}
           draft: false
           prerelease: false
         env:
